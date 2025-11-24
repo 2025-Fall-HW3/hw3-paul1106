@@ -59,13 +59,22 @@ class EqualWeightPortfolio:
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
 
-        """
-        TODO: Complete Task 1 Below
-        """
-
-        """
-        TODO: Complete Task 1 Above
-        """
+        # # ===========================================
+        # print("\n" + "="*30)
+        # print("【DEBUG: 檢查資料結構】")
+        # print(f"1. 資料維度 (Shape): {df_returns.shape}")
+        # print("   (解釋: Rows 是天數, Columns 是資產數量)")
+        # print("\n2. 前 5 筆報酬率資料 (df_returns.head()):")
+        # print(df_returns.head())
+        # print("\n3. 我們要分配權重的資產列表 (assets):")
+        # print(assets)
+        # print("="*30 + "\n")
+        # # ===========================================
+        # """
+        # TODO: Complete Task 1 Below
+        n = len(assets)
+        # TODO: Complete Task 1 Above
+        self.portfolio_weights[assets] = 1.0 / n
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
 
@@ -113,8 +122,12 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
-
-
+        rolling_std = df_returns[assets].iloc[1:].rolling(window=self.lookback, min_periods=self.lookback).std()
+        inv_vol = 1.0 / rolling_std
+        inv_vol.replace([np.inf, -np.inf], 0.0, inplace=True)
+        sum_inv_vol = inv_vol.sum(axis=1)
+        weights = inv_vol.div(sum_inv_vol, axis=0)
+        self.portfolio_weights[assets] = weights.shift(1)
 
         """
         TODO: Complete Task 2 Above
@@ -122,6 +135,8 @@ class RiskParityPortfolio:
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
+        print(self.portfolio_weights.head(55))
+        # print(self.portfolio_weights.tail())
 
     def calculate_portfolio_returns(self):
         # Ensure weights are calculated
@@ -188,37 +203,60 @@ class MeanVariancePortfolio:
                 TODO: Complete Task 3 Below
                 """
 
-                # Sample Code: Initialize Decision w and the Objective
-                # NOTE: You can modify the following code
-                w = model.addMVar(n, name="w", ub=1)
-                model.setObjective(w.sum(), gp.GRB.MAXIMIZE)
+                # --- Step 1: 定義決策變數 (Decision Variables) ---
+                # w 是權重向量，長度為 n
+                # lb=0.0 代表 w >= 0 (Long-only constraint)
+                # ub=1.0 代表 w <= 1 (其實 sum=1 已經隱含了，但加了也無妨)
+                w = model.addMVar(n, name="w", lb=0.0, ub=1.0)
+
+                # --- Step 2: 定義目標函數 (Objective Function) ---
+                # 公式: Maximize ( w.T * mu - (gamma/2) * w.T * Sigma * w )
+                
+                # 預期報酬 (Portfolio Return)
+                port_return = w @ mu
+                
+                # 投資組合變異數 (Portfolio Variance)
+                # 注意：因為 w 是 MVar，這裡可以直接用 @ 做矩陣乘法
+                port_risk = w @ Sigma @ w
+                
+                # 設定最大化目標
+                # Gurobi 會自動識別這是一個 QP (Quadratic Programming) 問題
+                model.setObjective(port_return - (gamma / 2) * port_risk, gp.GRB.MAXIMIZE)
+
+                # --- Step 3: 設定限制條件 (Constraints) ---
+                # 預算限制：所有權重加總必須等於 1
+                model.addConstr(w.sum() == 1, name="budget")
 
                 """
                 TODO: Complete Task 3 Above
                 """
+                
+                # --- Step 4: 求解 (Optimize) ---
                 model.optimize()
 
-                # Check if the status is INF_OR_UNBD (code 4)
+                # --- Step 5: 處理求解結果與例外狀況 ---
+                # 檢查是否無解 (Infeasible) 或 無界 (Unbounded)
                 if model.status == gp.GRB.INF_OR_UNBD:
-                    print(
-                        "Model status is INF_OR_UNBD. Reoptimizing with DualReductions set to 0."
-                    )
-                elif model.status == gp.GRB.INFEASIBLE:
-                    # Handle infeasible model
+                    print("Model status is INF_OR_UNBD. Reoptimizing with DualReductions set to 0.")
+                    model.setParam("DualReductions", 0)
+                    model.optimize()
+                    
+                if model.status == gp.GRB.INFEASIBLE:
                     print("Model is infeasible.")
-                elif model.status == gp.GRB.INF_OR_UNBD:
-                    # Handle infeasible or unbounded model
-                    print("Model is infeasible or unbounded.")
+                    # 如果無解，回傳平均分配 (當作 fallback)
+                    return np.ones(n) / n
+                    
+                elif model.status == gp.GRB.UNBOUNDED:
+                    print("Model is unbounded.")
+                    return np.ones(n) / n
 
+                # 如果成功找到最佳解 (Optimal)
                 if model.status == gp.GRB.OPTIMAL or model.status == gp.GRB.SUBOPTIMAL:
-                    # Extract the solution
-                    solution = []
-                    for i in range(n):
-                        var = model.getVarByName(f"w[{i}]")
-                        # print(f"w {i} = {var.X}")
-                        solution.append(var.X)
-
-        return solution
+                    # 提取 w 的數值 (.X 屬性)
+                    return w.X
+                
+                # 如果發生其他錯誤，回傳平均分配避免程式崩潰
+                return np.ones(n) / n
 
     def calculate_portfolio_returns(self):
         # Ensure weights are calculated
